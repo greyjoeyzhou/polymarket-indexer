@@ -46,3 +46,26 @@ pub fn contract_addresses() -> Result<Vec<Address>> {
         Address::from_str(NEG_RISK_ADAPTER_ADDRESS)?,
     ])
 }
+
+#[cfg(test)]
+mod tests {
+    use alloy::primitives::Address;
+    use std::str::FromStr;
+
+    use super::{CTF_ADDRESS, CTF_EXCHANGE_ADDRESS, NEG_RISK_ADAPTER_ADDRESS, contract_addresses};
+
+    #[test]
+    fn contract_addresses_returns_expected_constants_in_order() {
+        let addresses = contract_addresses().expect("addresses");
+        assert_eq!(addresses.len(), 3);
+        assert_eq!(addresses[0], Address::from_str(CTF_ADDRESS).expect("ctf"));
+        assert_eq!(
+            addresses[1],
+            Address::from_str(CTF_EXCHANGE_ADDRESS).expect("ctf exchange")
+        );
+        assert_eq!(
+            addresses[2],
+            Address::from_str(NEG_RISK_ADAPTER_ADDRESS).expect("neg risk adapter")
+        );
+    }
+}
