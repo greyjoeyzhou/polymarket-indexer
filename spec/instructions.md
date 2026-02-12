@@ -173,3 +173,25 @@ Run the checks and update accordingly to fix.
 ```
 create a gitignore file suitable for this project
 ```
+
+16. Hephaestus, GPT-5.3 Codex
+
+```
+/superpowers:write-plan 
+
+Refactor the current code base, extract common logic of blockchain data extraction, parsing, writing to several modules in a lib.
+Create thin wrapper clis for backfill and frontfill by using the common lib.
+```
+
+```
+- write down you plan to the `spec` dir following existing naming conventions
+- then exeucte by incremental commits-by-phase
+```
+
+0006_refactor-shared-ingestion-lib.md
+
+17. Hephaestus, GPT-5.3 Codex
+
+```
+update AGENTS.md and README.md to reflect current arch & practice for coding
+```

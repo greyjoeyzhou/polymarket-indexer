@@ -8,8 +8,9 @@ Follow these repo-specific commands and conventions to keep changes consistent.
 - Language: Rust (edition 2024)
 - Build system: Cargo
 - Runtime: Tokio async runtime
-- Domain: Polygon event indexing + Parquet persistence
-- Primary files: `src/main.rs`, `src/storage.rs`
+- Domain: Polygon event ingestion (frontfill + backfill) with pluggable sinks
+- Primary entrypoints: `src/main.rs` (frontfill CLI), `src/bin/backfill.rs` (backfill CLI)
+- Shared runtime/library modules: `src/lib.rs`, `src/frontfill.rs`, `src/backfill.rs`, `src/decode.rs`, `src/contracts.rs`, `src/storage.rs`
 
 ## Preferred Runtime and Tooling Crates
 
@@ -25,7 +26,7 @@ Use these Rust ecosystem defaults for new work in this repo:
 Run all commands from repository root:
 
 ```bash
-cd /Users/joey/Code/playground_hang/polymarket-indexer
+cd /Users/hang/Code/polymarket-indexer
 ```
 
 Use `just` as the primary interface for development lifecycle commands.
@@ -71,11 +72,11 @@ Use `just` as the primary interface for development lifecycle commands.
 
 ### Test Coverage
 
-This repo defines Cargo aliases in `.cargo/config.toml` for `cargo-llvm-cov`:
+Use `just` coverage recipes:
 
-- Summary report: `cargo coverage`
-- LCOV output: `cargo coverage-lcov` (writes `coverage/lcov.info`)
-- HTML report: `cargo coverage-html` (writes `coverage/html/`)
+- Summary report: `just coverage`
+- LCOV output: `just coverage-lcov` (writes `coverage/lcov.info`)
+- HTML report: `just coverage-html` (writes `coverage/html`)
 
 Prerequisite:
 
@@ -100,20 +101,21 @@ cargo test order_filled -- --exact --nocapture --test-threads=1
 
 ## Current Repo Reality (Verified)
 
-- `cargo check` succeeds.
-- `cargo test -- --list` runs and reports `0 tests, 0 benchmarks`.
-- `cargo fmt --check` currently reports formatting diffs in existing files.
-- Compiler/lint warnings currently exist (unused imports/field) in existing code.
+- The project is expected to pass `just fmt-check`, `just check`, `just clippy`, `just test`, and `just build` after changes.
+- Test coverage commands are available through `just coverage*` recipes.
 
 Do not treat existing warnings as permission to introduce new warnings.
 
 ## File and Module Conventions
 
 - Keep module layout flat unless complexity clearly requires nesting.
-- Current pattern:
-  - `src/main.rs`: runtime orchestration, event decoding, subscription loop
-  - `src/storage.rs`: Parquet storage abstraction
-- Declare modules in `main.rs` with `mod storage;` then import symbols.
+- Current architecture pattern:
+  - CLI wrappers only parse args/env and bootstrap runtime:
+    - `src/main.rs` for frontfill
+    - `src/bin/backfill.rs` for backfill
+  - Shared runtime + domain logic belongs in library modules:
+    - `src/frontfill.rs`, `src/backfill.rs`, `src/contracts.rs`, `src/decode.rs`, `src/storage.rs`
+- Export shared modules via `src/lib.rs` so binaries consume common code.
 
 ## Spec Documentation Conventions
 
@@ -173,10 +175,10 @@ Match the existing style and let `rustfmt` finalize ordering.
 
 ## Event and Data Handling
 
-- Preserve event-type-specific handling branches for readability.
-- Keep event decode/write flow explicit instead of overly generic abstractions.
-- Serialize event payloads consistently via `serde_json`.
-- Persist normalized metadata fields (`event_type`, `block_number`, `transaction_hash`, `log_index`, `data`).
+- Keep topic0-based event matching centralized in shared decode logic (`src/decode.rs`).
+- Preserve ordered event columns for each event type when normalizing decoded data.
+- Persist normalized metadata fields (`event_type`, `block_number`, `transaction_hash`, `log_index`) plus event-specific columns.
+- Keep sink interfaces generic (`EventSink`) so backends remain extensible.
 
 ## Agent Workflow Expectations
 
@@ -201,7 +203,7 @@ If any of these files are added later, treat them as higher-priority local polic
 ## Quick Start for New Agents
 
 1. Read `README.md` and `Cargo.toml`.
-2. Inspect `src/main.rs` and `src/storage.rs` for existing patterns.
+2. Inspect `src/lib.rs`, `src/frontfill.rs`, `src/backfill.rs`, `src/decode.rs`, and `src/storage.rs` for architecture and shared patterns.
 3. Implement the smallest viable change.
-4. Run `cargo fmt`, `cargo check`, and `cargo test`.
+4. Run `just fmt-check`, `just check`, `just clippy`, and `just test`.
 5. Report changes and verification results, including pre-existing failures.

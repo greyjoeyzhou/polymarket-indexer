@@ -1,15 +1,21 @@
 # Polymarket Event Indexer (MVP)
 
-This is a Rust-based indexer that streams live events from Polymarket's smart contracts on Polygon and saves them as Parquet files.
+This is a Rust-based indexer for Polymarket contracts on Polygon with two ingestion modes:
+
+- Frontfill (live streaming via WebSocket)
+- Backfill (historical range ingestion via HTTP `eth_getLogs`)
+
+Shared ingestion/decode/storage logic lives in the library, while binaries are thin CLI wrappers.
 
 ## Features
 
 -   **Live Streaming**: Connects to Polygon via WebSocket.
+-   **Historical Backfill**: Fetches logs over block ranges via HTTP RPC.
 -   **Event Decoding**: Decodes events from:
     -   Conditional Tokens Framework (CTF)
     -   CTF Exchange
     -   NegRiskAdapter
--   **Parquet Storage**: Writes structured event data to Parquet files, partitioned by event type.
+-   **Pluggable Sinks**: Generic sink interface with Parquet support and optional Kafka support.
 
 ## Prerequisites
 
@@ -25,6 +31,18 @@ This is a Rust-based indexer that streams live events from Polymarket's smart co
     just build
     ```
 
+## Architecture
+
+-   **Thin binaries**
+    - `src/main.rs`: frontfill CLI wrapper
+    - `src/bin/backfill.rs`: backfill CLI wrapper
+-   **Shared library modules**
+    - `src/frontfill.rs`: live ingestion runtime
+    - `src/backfill.rs`: backfill runtime
+    - `src/contracts.rs`: event declarations and contract constants
+    - `src/decode.rs`: topic0 routing and event normalization
+    - `src/storage.rs`: sink trait + implementations
+
 ## Development Commands
 
 Use `just` as the primary interface for development workflows:
@@ -35,17 +53,32 @@ just check         # fast compile/type validation
 just fmt           # format code
 just clippy        # lint all targets with warnings denied
 just test          # run all tests
+just coverage      # coverage summary
+just coverage-lcov # write coverage/lcov.info
+just coverage-html # write coverage/html
 just build         # debug build
 just build-release # release build
 ```
 
-## Running
+## Running Frontfill
 
 ```bash
 just run-release
 ```
 
-The indexer will start listening for events and write them to the `output/` directory.
+Starts live streaming and writes output according to sink configuration.
+
+## Running Backfill
+
+```bash
+just run-backfill -- --start-block <START> --end-block <END>
+```
+
+Example:
+
+```bash
+just run-backfill -- --start-block 68000000 --end-block 68001000 --output-dir output
+```
 
 ## Output Structure
 
@@ -62,13 +95,20 @@ output/
   ...
 ```
 
-Each Parquet file contains:
+Each Parquet file contains normalized metadata columns and event-specific columns:
+
 -   `event_type`: The name of the event.
 -   `block_number`: The block number where the event occurred.
 -   `transaction_hash`: The transaction hash.
 -   `log_index`: The log index within the block.
--   `data`: The JSON-serialized event data.
+-   Event-specific decoded columns (for example `order_hash`, `maker`, `taker`, etc).
 
 ## Configuration
 
-The contract addresses and RPC URL are defined in `src/main.rs`. You can modify `RPC_URL` to use your own Polygon RPC provider for better stability.
+Common configuration is exposed through CLI flags and env vars (Clap `env` bindings). Key examples:
+
+- `RPC_URL` for frontfill WebSocket RPC
+- `RPC_HTTP_URL` and optional `RPC_HTTP_KEY` for backfill HTTP RPC
+- `OUTPUT_DIR` for Parquet output
+- `FLUSH_BLOCKS` (frontfill rotation)
+- `CHUNK_SIZE_BY_BLOCK_NUMBER`, `PARALLELISM`, and `RATE_LIMIT_PER_SECOND` (backfill)
