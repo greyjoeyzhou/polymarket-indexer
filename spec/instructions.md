@@ -215,3 +215,24 @@ follow the plan in spec/0007_backfill-header-auth.md and implement
 ```
 check the `run` commands in just, make sure they can actually run
 ```
+
+20. Hephaestus, GPT-5.3 Codex
+
+```
+/superpowers:write-plan 
+Analyze the current unit test coverage, come up with a plan to improve the coverage to 85%.
+```
+
+009_coverage-to-85-plan.md
+
+```
+execute phase 1
+```
+
+```
+execute phase 2; when finish you can proceed into phase 3 directly.
+```
+
+```
+yes, please work on phase 4 now.
+```
