@@ -209,3 +209,9 @@ Write the plan to `spec` dir.
 /superpowers:executing-plans
 follow the plan in spec/0007_backfill-header-auth.md and implement
 ```
+
+19. Hephaestus, GPT-5.3 Codex
+
+```
+check the `run` commands in just, make sure they can actually run
+```

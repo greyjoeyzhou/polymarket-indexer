@@ -41,11 +41,11 @@ coverage-html:
     mkdir -p coverage
     cargo llvm-cov --html --output-dir coverage
 
-run:
-    cargo run
+run *args:
+    cargo run --bin polymarket-indexer {{args}}
 
-run-release:
-    cargo run --release
+run-release *args:
+    cargo run --release --bin polymarket-indexer {{args}}
 
 run-backfill *args:
     cargo run --bin backfill {{args}}
