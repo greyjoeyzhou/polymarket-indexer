@@ -108,7 +108,12 @@ Each Parquet file contains normalized metadata columns and event-specific column
 Common configuration is exposed through CLI flags and env vars (Clap `env` bindings). Key examples:
 
 - `RPC_URL` for frontfill WebSocket RPC
+- `RPC_AUTH_KEY`, `RPC_AUTH_HEADER` (default `Authorization`), and `RPC_AUTH_SCHEME` (default `Bearer`) for frontfill WebSocket header auth
 - `RPC_HTTP_URL` and optional `RPC_HTTP_KEY` for backfill HTTP RPC
+- `RPC_HTTP_AUTH_HEADER` (default `Authorization`) and `RPC_HTTP_AUTH_SCHEME` (default `Bearer`) for header-based auth
 - `OUTPUT_DIR` for Parquet output
 - `FLUSH_BLOCKS` (frontfill rotation)
 - `CHUNK_SIZE_BY_BLOCK_NUMBER`, `PARALLELISM`, and `RATE_LIMIT_PER_SECOND` (backfill)
+
+When `RPC_HTTP_KEY` is set for backfill, the key is sent via HTTP headers (not URL query params).
+When `RPC_AUTH_KEY` is set for frontfill, the key is sent via the WebSocket `Authorization` header.

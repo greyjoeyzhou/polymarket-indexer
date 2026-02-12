@@ -29,6 +29,12 @@ struct Args {
     #[arg(long, env = "RPC_HTTP_KEY")]
     rpc_http_key: Option<String>,
 
+    #[arg(long, default_value = "Authorization", env = "RPC_HTTP_AUTH_HEADER")]
+    rpc_http_auth_header: String,
+
+    #[arg(long, default_value = "Bearer", env = "RPC_HTTP_AUTH_SCHEME")]
+    rpc_http_auth_scheme: String,
+
     #[arg(long, default_value = "output", env = "OUTPUT_DIR")]
     output_dir: String,
 }
@@ -52,7 +58,30 @@ async fn main() -> Result<()> {
         rate_limit_per_second: args.rate_limit_per_second,
         rpc_http_url: args.rpc_http_url,
         rpc_http_key: args.rpc_http_key,
+        rpc_http_auth_header: args.rpc_http_auth_header,
+        rpc_http_auth_scheme: args.rpc_http_auth_scheme,
         output_dir: args.output_dir,
     })
     .await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Args;
+    use clap::Parser;
+
+    #[test]
+    fn args_use_default_auth_header_settings() {
+        let args = Args::try_parse_from([
+            "polymarket-backfill",
+            "--start-block",
+            "1",
+            "--end-block",
+            "2",
+        ])
+        .expect("parse args");
+
+        assert_eq!(args.rpc_http_auth_header, "Authorization");
+        assert_eq!(args.rpc_http_auth_scheme, "Bearer");
+    }
 }

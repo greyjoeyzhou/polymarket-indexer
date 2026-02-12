@@ -163,6 +163,8 @@ Match the existing style and let `rustfmt` finalize ordering.
 - Use `tracing::{info, warn, error, debug}` for runtime observability.
 - Define CLI args with `clap::Parser` derive-based structs.
 - Use Clap `env` bindings for env-backed defaults (e.g., RPC URLs, output paths).
+- For frontfill paid RPC auth, use header-based auth (`RPC_AUTH_KEY` + `RPC_AUTH_HEADER`/`RPC_AUTH_SCHEME`), sent via the WebSocket `Authorization` header.
+- For backfill paid RPC auth, prefer header-based auth (`RPC_HTTP_KEY` + `RPC_HTTP_AUTH_HEADER`/`RPC_HTTP_AUTH_SCHEME`) instead of URL query key injection.
 - Load local environment files via `dotenvy::dotenv()` during startup.
 
 ## Error Handling

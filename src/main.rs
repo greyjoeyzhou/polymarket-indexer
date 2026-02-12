@@ -15,6 +15,15 @@ struct Args {
     #[arg(long, default_value = RPC_URL, env = "RPC_URL")]
     rpc_url: String,
 
+    #[arg(long, env = "RPC_AUTH_KEY")]
+    rpc_auth_key: Option<String>,
+
+    #[arg(long, default_value = "Authorization", env = "RPC_AUTH_HEADER")]
+    rpc_auth_header: String,
+
+    #[arg(long, default_value = "Bearer", env = "RPC_AUTH_SCHEME")]
+    rpc_auth_scheme: String,
+
     #[arg(long, default_value = "output", env = "OUTPUT_DIR")]
     output_dir: String,
 
@@ -64,6 +73,9 @@ async fn main() -> Result<()> {
     frontfill::run(FrontfillConfig {
         flush_blocks: args.flush_blocks,
         rpc_url: args.rpc_url,
+        rpc_auth_key: args.rpc_auth_key,
+        rpc_auth_header: args.rpc_auth_header,
+        rpc_auth_scheme: args.rpc_auth_scheme,
         sink,
     })
     .await
@@ -85,5 +97,12 @@ mod tests {
         let args = Args::try_parse_from(["polymarket-indexer", "--flush-blocks", "250"])
             .expect("parse args");
         assert_eq!(args.flush_blocks, 250);
+    }
+
+    #[test]
+    fn args_use_default_auth_header_settings() {
+        let args = Args::try_parse_from(["polymarket-indexer"]).expect("parse args");
+        assert_eq!(args.rpc_auth_header, "Authorization");
+        assert_eq!(args.rpc_auth_scheme, "Bearer");
     }
 }

@@ -195,3 +195,17 @@ Create thin wrapper clis for backfill and frontfill by using the common lib.
 ```
 update AGENTS.md and README.md to reflect current arch & practice for coding
 ```
+
+18. Hephaestus, GPT-5.3 Codex
+
+```
+/superpowers:write-plan 
+Notice it is using the auth key as part of the url, which is not very safe.
+Change to use header based auth when we have an auth key set.
+Write the plan to `spec` dir.
+```
+
+```
+/superpowers:executing-plans
+follow the plan in spec/0007_backfill-header-auth.md and implement
+```

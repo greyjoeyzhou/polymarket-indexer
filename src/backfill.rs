@@ -1,8 +1,11 @@
 use alloy::providers::{Provider, ProviderBuilder};
+use alloy::rpc::client::ClientBuilder as RpcClientBuilder;
 use alloy::rpc::types::{BlockNumberOrTag, Filter};
+use alloy::transports::http::Http;
 use anyhow::{Result, anyhow};
 use futures::StreamExt;
 use reqwest::Url;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -60,24 +63,35 @@ pub struct BackfillConfig {
     pub rate_limit_per_second: usize,
     pub rpc_http_url: String,
     pub rpc_http_key: Option<String>,
+    pub rpc_http_auth_header: String,
+    pub rpc_http_auth_scheme: String,
     pub output_dir: String,
 }
 
-fn build_http_url(base: &str, key: Option<&str>) -> Result<Url> {
-    if let Some(key) = key {
-        if base.contains("{API_KEY}") {
-            let url = base.replace("{API_KEY}", key);
-            return Ok(Url::parse(&url)?);
-        }
+fn build_http_url(base: &str) -> Result<Url> {
+    Ok(Url::parse(base)?)
+}
 
-        let mut url = Url::parse(base)?;
-        if !key.is_empty() {
-            url.query_pairs_mut().append_pair("apiKey", key);
-        }
-        return Ok(url);
+fn build_auth_headers(
+    key: Option<&str>,
+    header_name: &str,
+    header_scheme: &str,
+) -> Result<HeaderMap> {
+    let mut headers = HeaderMap::new();
+
+    if let Some(key) = key
+        && !key.is_empty()
+    {
+        let header_name = HeaderName::from_bytes(header_name.as_bytes())?;
+        let header_value = if header_scheme.is_empty() {
+            key.to_string()
+        } else {
+            format!("{header_scheme} {key}")
+        };
+        headers.insert(header_name, HeaderValue::from_str(&header_value)?);
     }
 
-    Ok(Url::parse(base)?)
+    Ok(headers)
 }
 
 fn write_parquet_file(
@@ -187,8 +201,19 @@ pub async fn run(config: BackfillConfig) -> Result<()> {
     let rate_limiter = RateLimiter::new(config.rate_limit_per_second);
     rate_limiter.clone().spawn_refill();
 
-    let http_url = build_http_url(&config.rpc_http_url, config.rpc_http_key.as_deref())?;
-    let provider = Arc::new(ProviderBuilder::new().on_http(http_url));
+    let http_url = build_http_url(&config.rpc_http_url)?;
+    let auth_headers = build_auth_headers(
+        config.rpc_http_key.as_deref(),
+        &config.rpc_http_auth_header,
+        &config.rpc_http_auth_scheme,
+    )?;
+    let http_client = reqwest::Client::builder()
+        .default_headers(auth_headers)
+        .build()?;
+    let transport = Http::with_client(http_client, http_url);
+    let provider = Arc::new(ProviderBuilder::new().on_client(
+        RpcClientBuilder::default().transport(transport.clone(), transport.guess_local()),
+    ));
 
     let addresses = contract_addresses()?;
     let ranges = chunk_ranges(
@@ -299,23 +324,39 @@ pub async fn run(config: BackfillConfig) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::build_http_url;
+    use super::{build_auth_headers, build_http_url};
 
     #[test]
-    fn build_http_url_replaces_placeholder() {
-        let url = build_http_url("https://example.com/{API_KEY}", Some("abc")).expect("url");
-        assert_eq!(url.as_str(), "https://example.com/abc");
+    fn build_http_url_keeps_base_url_unchanged() {
+        let url = build_http_url("https://example.com/rpc?foo=bar").expect("url");
+        assert_eq!(url.as_str(), "https://example.com/rpc?foo=bar");
     }
 
     #[test]
-    fn build_http_url_appends_query() {
-        let url = build_http_url("https://example.com/rpc", Some("abc")).expect("url");
-        assert_eq!(url.as_str(), "https://example.com/rpc?apiKey=abc");
+    fn build_auth_headers_uses_default_bearer_authorization() {
+        let headers = build_auth_headers(Some("abc"), "Authorization", "Bearer").expect("headers");
+        let value = headers
+            .get("authorization")
+            .expect("authorization header")
+            .to_str()
+            .expect("header value");
+        assert_eq!(value, "Bearer abc");
     }
 
     #[test]
-    fn build_http_url_appends_query_when_existing() {
-        let url = build_http_url("https://example.com/rpc?foo=bar", Some("abc")).expect("url");
-        assert_eq!(url.as_str(), "https://example.com/rpc?foo=bar&apiKey=abc");
+    fn build_auth_headers_supports_custom_header_and_empty_scheme() {
+        let headers = build_auth_headers(Some("abc"), "x-api-key", "").expect("headers");
+        let value = headers
+            .get("x-api-key")
+            .expect("x-api-key header")
+            .to_str()
+            .expect("header value");
+        assert_eq!(value, "abc");
+    }
+
+    #[test]
+    fn build_auth_headers_is_empty_without_key() {
+        let headers = build_auth_headers(None, "Authorization", "Bearer").expect("headers");
+        assert!(headers.is_empty());
     }
 }

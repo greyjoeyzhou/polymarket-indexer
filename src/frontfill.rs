@@ -1,5 +1,6 @@
 use alloy::providers::{Provider, ProviderBuilder, WsConnect};
 use alloy::rpc::types::{BlockNumberOrTag, Filter};
+use alloy::transports::Authorization;
 use anyhow::{Result, anyhow};
 use futures::StreamExt;
 use std::sync::Arc;
@@ -25,7 +26,40 @@ pub enum SinkConfig {
 pub struct FrontfillConfig {
     pub flush_blocks: u64,
     pub rpc_url: String,
+    pub rpc_auth_key: Option<String>,
+    pub rpc_auth_header: String,
+    pub rpc_auth_scheme: String,
     pub sink: SinkConfig,
+}
+
+fn build_ws_auth(
+    key: Option<&str>,
+    header_name: &str,
+    scheme: &str,
+) -> Result<Option<Authorization>> {
+    let Some(key) = key else {
+        return Ok(None);
+    };
+
+    if key.is_empty() {
+        return Ok(None);
+    }
+
+    if !header_name.eq_ignore_ascii_case("authorization") {
+        return Err(anyhow!(
+            "frontfill websocket auth supports only the Authorization header"
+        ));
+    }
+
+    if scheme.is_empty() {
+        return Ok(Some(Authorization::raw(key)));
+    }
+
+    if scheme.eq_ignore_ascii_case("bearer") {
+        return Ok(Some(Authorization::bearer(key)));
+    }
+
+    Ok(Some(Authorization::raw(format!("{scheme} {key}"))))
 }
 
 pub async fn run(config: FrontfillConfig) -> Result<()> {
@@ -67,7 +101,15 @@ pub async fn run(config: FrontfillConfig) -> Result<()> {
         }
     };
 
-    let ws = WsConnect::new(&config.rpc_url);
+    let auth = build_ws_auth(
+        config.rpc_auth_key.as_deref(),
+        &config.rpc_auth_header,
+        &config.rpc_auth_scheme,
+    )?;
+    let mut ws = WsConnect::new(&config.rpc_url);
+    if let Some(auth) = auth {
+        ws = ws.with_auth(auth);
+    }
     let provider = ProviderBuilder::new().on_ws(ws).await?;
     info!("Connected to Polygon WebSocket");
 
@@ -128,4 +170,32 @@ pub async fn run(config: FrontfillConfig) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy::transports::Authorization;
+
+    use super::build_ws_auth;
+
+    #[test]
+    fn build_ws_auth_defaults_to_bearer_authorization() {
+        let auth = build_ws_auth(Some("abc"), "Authorization", "Bearer").expect("auth");
+        assert_eq!(auth, Some(Authorization::bearer("abc")));
+    }
+
+    #[test]
+    fn build_ws_auth_supports_raw_scheme_when_empty() {
+        let auth = build_ws_auth(Some("abc"), "Authorization", "").expect("auth");
+        assert_eq!(auth, Some(Authorization::raw("abc")));
+    }
+
+    #[test]
+    fn build_ws_auth_rejects_non_authorization_header() {
+        let error = build_ws_auth(Some("abc"), "x-api-key", "Bearer").expect_err("error");
+        assert_eq!(
+            error.to_string(),
+            "frontfill websocket auth supports only the Authorization header"
+        );
+    }
 }
