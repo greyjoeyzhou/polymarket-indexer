@@ -13,6 +13,8 @@ use crate::decode::decode_log;
 use crate::storage::KafkaStorage;
 use crate::storage::{EventSink, ParquetStorage};
 
+type SharedSink = Arc<Mutex<Box<dyn EventSink>>>;
+
 pub enum SinkConfig {
     Parquet {
         output_dir: String,
@@ -62,18 +64,8 @@ fn build_ws_auth(
     Ok(Some(Authorization::raw(format!("{scheme} {key}"))))
 }
 
-pub async fn run(config: FrontfillConfig) -> Result<()> {
-    if config.flush_blocks == 0 {
-        return Err(anyhow!("flush-blocks must be greater than 0"));
-    }
-
-    info!(
-        flush_blocks = config.flush_blocks,
-        rpc_url = %config.rpc_url,
-        "Runtime configuration loaded"
-    );
-
-    let storage: Arc<Mutex<Box<dyn EventSink>>> = match config.sink {
+fn build_storage(sink: SinkConfig) -> Result<SharedSink> {
+    Ok(match sink {
         SinkConfig::Parquet { output_dir } => {
             Arc::new(Mutex::new(Box::new(ParquetStorage::new(&output_dir))))
         }
@@ -99,17 +91,42 @@ pub async fn run(config: FrontfillConfig) -> Result<()> {
                 return Err(anyhow!("kafka sink requires the 'kafka' feature flag"));
             }
         }
-    };
+    })
+}
 
-    let auth = build_ws_auth(
+fn build_ws_connect(
+    rpc_url: &str,
+    rpc_auth_key: Option<&str>,
+    rpc_auth_header: &str,
+    rpc_auth_scheme: &str,
+) -> Result<WsConnect> {
+    let auth = build_ws_auth(rpc_auth_key, rpc_auth_header, rpc_auth_scheme)?;
+    let mut ws = WsConnect::new(rpc_url);
+    if let Some(auth) = auth {
+        ws = ws.with_auth(auth);
+    }
+    Ok(ws)
+}
+
+pub async fn run(config: FrontfillConfig) -> Result<()> {
+    if config.flush_blocks == 0 {
+        return Err(anyhow!("flush-blocks must be greater than 0"));
+    }
+
+    info!(
+        flush_blocks = config.flush_blocks,
+        rpc_url = %config.rpc_url,
+        "Runtime configuration loaded"
+    );
+
+    let storage = build_storage(config.sink)?;
+
+    let ws = build_ws_connect(
+        &config.rpc_url,
         config.rpc_auth_key.as_deref(),
         &config.rpc_auth_header,
         &config.rpc_auth_scheme,
     )?;
-    let mut ws = WsConnect::new(&config.rpc_url);
-    if let Some(auth) = auth {
-        ws = ws.with_auth(auth);
-    }
     let provider = ProviderBuilder::new().on_ws(ws).await?;
     info!("Connected to Polygon WebSocket");
 
@@ -175,8 +192,20 @@ pub async fn run(config: FrontfillConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use alloy::transports::Authorization;
+    use tempfile::tempdir;
 
-    use super::build_ws_auth;
+    use super::{FrontfillConfig, SinkConfig, build_storage, build_ws_auth, build_ws_connect, run};
+
+    fn test_config(sink: SinkConfig) -> FrontfillConfig {
+        FrontfillConfig {
+            flush_blocks: 10,
+            rpc_url: "wss://example.invalid".to_string(),
+            rpc_auth_key: None,
+            rpc_auth_header: "Authorization".to_string(),
+            rpc_auth_scheme: "Bearer".to_string(),
+            sink,
+        }
+    }
 
     #[test]
     fn build_ws_auth_defaults_to_bearer_authorization() {
@@ -196,6 +225,136 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "frontfill websocket auth supports only the Authorization header"
+        );
+    }
+
+    #[test]
+    fn build_ws_auth_supports_custom_scheme_value() {
+        let auth = build_ws_auth(Some("abc"), "Authorization", "Token").expect("auth");
+        assert_eq!(auth, Some(Authorization::raw("Token abc")));
+    }
+
+    #[test]
+    fn build_ws_auth_returns_none_for_empty_key() {
+        let auth = build_ws_auth(Some(""), "Authorization", "Bearer").expect("auth");
+        assert_eq!(auth, None);
+    }
+
+    #[test]
+    fn build_ws_auth_returns_none_when_key_is_missing() {
+        let auth = build_ws_auth(None, "Authorization", "Bearer").expect("auth");
+        assert_eq!(auth, None);
+    }
+
+    #[test]
+    fn build_ws_connect_sets_bearer_auth_when_provided() {
+        let ws = build_ws_connect(
+            "wss://example.invalid",
+            Some("abc"),
+            "Authorization",
+            "Bearer",
+        )
+        .expect("ws");
+
+        assert_eq!(ws.url, "wss://example.invalid");
+        assert_eq!(ws.auth, Some(Authorization::bearer("abc")));
+    }
+
+    #[test]
+    fn build_ws_connect_keeps_auth_empty_without_key() {
+        let ws =
+            build_ws_connect("wss://example.invalid", None, "Authorization", "Bearer").expect("ws");
+        assert_eq!(ws.auth, None);
+    }
+
+    #[tokio::test]
+    async fn build_storage_initializes_parquet_sink() {
+        let dir = tempdir().expect("tempdir");
+        let sink = build_storage(SinkConfig::Parquet {
+            output_dir: dir.path().to_string_lossy().to_string(),
+        })
+        .expect("sink");
+
+        sink.lock().await.close().await.expect("close");
+    }
+
+    #[cfg(not(feature = "kafka"))]
+    #[test]
+    fn build_storage_kafka_errors_without_feature() {
+        let result = build_storage(SinkConfig::Kafka {
+            brokers: Some("localhost:9092".to_string()),
+            topic_prefix: "polymarket".to_string(),
+        });
+
+        let error = match result {
+            Ok(_) => panic!("expected error"),
+            Err(error) => error,
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "kafka sink requires the 'kafka' feature flag"
+        );
+    }
+
+    #[cfg(feature = "kafka")]
+    #[tokio::test]
+    async fn build_storage_kafka_requires_brokers() {
+        let result = build_storage(SinkConfig::Kafka {
+            brokers: None,
+            topic_prefix: "polymarket".to_string(),
+        });
+
+        let error = match result {
+            Ok(_) => panic!("expected error"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.to_string(), "kafka sink requires --kafka-brokers");
+    }
+
+    #[tokio::test]
+    async fn run_returns_error_when_flush_blocks_is_zero() {
+        let config = FrontfillConfig {
+            flush_blocks: 0,
+            ..test_config(SinkConfig::Parquet {
+                output_dir: "output".to_string(),
+            })
+        };
+
+        let error = run(config).await.expect_err("error");
+        assert_eq!(error.to_string(), "flush-blocks must be greater than 0");
+    }
+
+    #[tokio::test]
+    async fn run_returns_error_for_invalid_auth_header_when_key_is_set() {
+        let dir = tempdir().expect("tempdir");
+        let mut config = test_config(SinkConfig::Parquet {
+            output_dir: dir.path().to_string_lossy().to_string(),
+        });
+        config.rpc_auth_key = Some("abc".to_string());
+        config.rpc_auth_header = "x-api-key".to_string();
+
+        let error = run(config).await.expect_err("error");
+        assert_eq!(
+            error.to_string(),
+            "frontfill websocket auth supports only the Authorization header"
+        );
+    }
+
+    #[cfg(not(feature = "kafka"))]
+    #[test]
+    fn run_returns_error_for_kafka_sink_without_feature() {
+        let config = test_config(SinkConfig::Kafka {
+            brokers: Some("localhost:9092".to_string()),
+            topic_prefix: "polymarket".to_string(),
+        });
+
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let error = runtime.block_on(run(config)).expect_err("error");
+        assert_eq!(
+            error.to_string(),
+            "kafka sink requires the 'kafka' feature flag"
         );
     }
 }
