@@ -1,0 +1,23 @@
+# Rust build artifacts
+/target/
+
+# Coverage outputs
+/coverage/
+
+# Runtime/output data
+/output/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
+
+# IDE/editor
+.idea/
+.vscode/
+
+# Logs
+*.log
