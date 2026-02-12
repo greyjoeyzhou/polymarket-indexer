@@ -386,4 +386,36 @@ mod tests {
 
         assert_eq!(files, 2, "expected one file per file set");
     }
+
+    #[test]
+    fn write_event_rejects_schema_mismatch_for_same_event_type() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let base_path = temp_dir.path().to_string_lossy().to_string();
+
+        let mut storage = ParquetStorage::new(&base_path);
+        storage
+            .write_event(
+                "OrderCancelled",
+                1,
+                "0x1",
+                1,
+                &[("order_hash", "0x1".to_string())],
+            )
+            .expect("write first schema");
+
+        let error = storage
+            .write_event(
+                "OrderCancelled",
+                2,
+                "0x2",
+                2,
+                &[("different_column", "x".to_string())],
+            )
+            .expect_err("schema mismatch");
+
+        assert_eq!(
+            error.to_string(),
+            "schema mismatch for event type 'OrderCancelled'"
+        );
+    }
 }

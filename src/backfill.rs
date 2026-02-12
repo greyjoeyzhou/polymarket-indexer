@@ -324,12 +324,38 @@ pub async fn run(config: BackfillConfig) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_auth_headers, build_http_url};
+    use std::path::Path;
+
+    use super::{
+        BackfillConfig, EventRow, build_auth_headers, build_http_url, chunk_ranges, run,
+        write_parquet_file,
+    };
+
+    fn valid_config() -> BackfillConfig {
+        BackfillConfig {
+            start_block: 1,
+            end_block: 2,
+            chunk_size_by_block_number: 1,
+            parallelism: 1,
+            rate_limit_per_second: 1,
+            rpc_http_url: "https://example.com".to_string(),
+            rpc_http_key: None,
+            rpc_http_auth_header: "Authorization".to_string(),
+            rpc_http_auth_scheme: "Bearer".to_string(),
+            output_dir: "output".to_string(),
+        }
+    }
 
     #[test]
     fn build_http_url_keeps_base_url_unchanged() {
         let url = build_http_url("https://example.com/rpc?foo=bar").expect("url");
         assert_eq!(url.as_str(), "https://example.com/rpc?foo=bar");
+    }
+
+    #[test]
+    fn build_http_url_returns_error_for_invalid_url() {
+        let error = build_http_url("not a url").expect_err("invalid url");
+        assert!(error.to_string().contains("relative URL without a base"));
     }
 
     #[test]
@@ -358,5 +384,126 @@ mod tests {
     fn build_auth_headers_is_empty_without_key() {
         let headers = build_auth_headers(None, "Authorization", "Bearer").expect("headers");
         assert!(headers.is_empty());
+    }
+
+    #[test]
+    fn build_auth_headers_returns_error_for_invalid_header_name() {
+        let error = build_auth_headers(Some("abc"), "bad header", "Bearer").expect_err("error");
+        assert!(error.to_string().contains("invalid HTTP header name"));
+    }
+
+    #[test]
+    fn build_auth_headers_returns_error_for_invalid_header_value() {
+        let error =
+            build_auth_headers(Some("abc\nxyz"), "Authorization", "Bearer").expect_err("error");
+        assert!(error.to_string().contains("failed to parse header value"));
+    }
+
+    #[test]
+    fn chunk_ranges_splits_evenly() {
+        let ranges = chunk_ranges(100, 109, 5);
+        assert_eq!(ranges, vec![(100, 104), (105, 109)]);
+    }
+
+    #[test]
+    fn chunk_ranges_adds_remainder_chunk() {
+        let ranges = chunk_ranges(100, 111, 5);
+        assert_eq!(ranges, vec![(100, 104), (105, 109), (110, 111)]);
+    }
+
+    #[test]
+    fn chunk_ranges_handles_single_block() {
+        let ranges = chunk_ranges(42, 42, 10);
+        assert_eq!(ranges, vec![(42, 42)]);
+    }
+
+    #[tokio::test]
+    async fn run_returns_error_when_start_block_exceeds_end_block() {
+        let mut config = valid_config();
+        config.start_block = 10;
+        config.end_block = 9;
+
+        let error = run(config).await.expect_err("error");
+        assert_eq!(error.to_string(), "start-block must be <= end-block");
+    }
+
+    #[tokio::test]
+    async fn run_returns_error_when_chunk_size_is_zero() {
+        let mut config = valid_config();
+        config.chunk_size_by_block_number = 0;
+
+        let error = run(config).await.expect_err("error");
+        assert_eq!(error.to_string(), "chunk-size-by-block-number must be > 0");
+    }
+
+    #[tokio::test]
+    async fn run_returns_error_when_parallelism_is_zero() {
+        let mut config = valid_config();
+        config.parallelism = 0;
+
+        let error = run(config).await.expect_err("error");
+        assert_eq!(error.to_string(), "parallelism must be > 0");
+    }
+
+    #[tokio::test]
+    async fn run_returns_error_when_rate_limit_is_zero() {
+        let mut config = valid_config();
+        config.rate_limit_per_second = 0;
+
+        let error = run(config).await.expect_err("error");
+        assert_eq!(error.to_string(), "rate-limit-per-second must be > 0");
+    }
+
+    #[test]
+    fn write_parquet_file_creates_output_file() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let output_dir = temp_dir.path().to_string_lossy().to_string();
+        let columns = vec!["order_hash".to_string(), "maker".to_string()];
+        let rows = vec![
+            EventRow {
+                block_number: 100,
+                tx_hash: "0xtx1".to_string(),
+                log_index: 0,
+                values: vec!["0xorder1".to_string(), "0xmaker1".to_string()],
+            },
+            EventRow {
+                block_number: 101,
+                tx_hash: "0xtx2".to_string(),
+                log_index: 1,
+                values: vec!["0xorder2".to_string(), "0xmaker2".to_string()],
+            },
+        ];
+
+        write_parquet_file(&output_dir, "OrderFilled", &columns, &rows, 100, 199)
+            .expect("write parquet");
+
+        let file_path = temp_dir.path().join("OrderFilled").join("100-199.parquet");
+        assert!(Path::new(&file_path).exists());
+    }
+
+    #[test]
+    fn write_parquet_file_errors_when_output_path_is_not_directory() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let file_path = temp_dir.path().join("not_a_directory");
+        std::fs::write(&file_path, b"file").expect("create file");
+
+        let columns = vec!["order_hash".to_string()];
+        let rows = vec![EventRow {
+            block_number: 1,
+            tx_hash: "0xtx".to_string(),
+            log_index: 0,
+            values: vec!["0xorder".to_string()],
+        }];
+
+        let error = write_parquet_file(
+            &file_path.to_string_lossy(),
+            "OrderFilled",
+            &columns,
+            &rows,
+            1,
+            1,
+        )
+        .expect_err("write error");
+        assert!(error.to_string().contains("Not a directory"));
     }
 }
