@@ -35,6 +35,15 @@ struct Args {
 
     #[arg(long, default_value = "polymarket", env = "KAFKA_TOPIC_PREFIX")]
     kafka_topic_prefix: String,
+
+    #[arg(long, default_value_t = false, env = "METRICS_ENABLED")]
+    metrics_enabled: bool,
+
+    #[arg(long, default_value = "127.0.0.1", env = "METRICS_BIND")]
+    metrics_bind: String,
+
+    #[arg(long, default_value_t = 9090, env = "METRICS_PORT")]
+    metrics_port: u16,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -76,6 +85,9 @@ async fn main() -> Result<()> {
         rpc_auth_key: args.rpc_auth_key,
         rpc_auth_header: args.rpc_auth_header,
         rpc_auth_scheme: args.rpc_auth_scheme,
+        metrics_enabled: args.metrics_enabled,
+        metrics_bind: args.metrics_bind,
+        metrics_port: args.metrics_port,
         sink,
     })
     .await
@@ -104,5 +116,13 @@ mod tests {
         let args = Args::try_parse_from(["polymarket-indexer"]).expect("parse args");
         assert_eq!(args.rpc_auth_header, "Authorization");
         assert_eq!(args.rpc_auth_scheme, "Bearer");
+    }
+
+    #[test]
+    fn args_use_default_metrics_settings() {
+        let args = Args::try_parse_from(["polymarket-indexer"]).expect("parse args");
+        assert!(!args.metrics_enabled);
+        assert_eq!(args.metrics_bind, "127.0.0.1");
+        assert_eq!(args.metrics_port, 9090);
     }
 }

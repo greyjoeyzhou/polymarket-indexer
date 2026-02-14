@@ -9,6 +9,7 @@ use tracing::info;
 
 use crate::contracts::contract_addresses;
 use crate::decode::decode_log;
+use crate::metrics::start_metrics_runtime;
 #[cfg(feature = "kafka")]
 use crate::storage::KafkaStorage;
 use crate::storage::{EventSink, ParquetStorage};
@@ -31,6 +32,9 @@ pub struct FrontfillConfig {
     pub rpc_auth_key: Option<String>,
     pub rpc_auth_header: String,
     pub rpc_auth_scheme: String,
+    pub metrics_enabled: bool,
+    pub metrics_bind: String,
+    pub metrics_port: u16,
     pub sink: SinkConfig,
 }
 
@@ -127,8 +131,19 @@ pub async fn run(config: FrontfillConfig) -> Result<()> {
         &config.rpc_auth_header,
         &config.rpc_auth_scheme,
     )?;
+
     let provider = ProviderBuilder::new().on_ws(ws).await?;
     info!("Connected to Polygon WebSocket");
+
+    let mut metrics_runtime = if config.metrics_enabled {
+        Some(start_metrics_runtime(&config.metrics_bind, config.metrics_port).await?)
+    } else {
+        None
+    };
+
+    if let Some(runtime) = metrics_runtime.as_ref() {
+        runtime.metrics.ws_connected.set(1.0);
+    }
 
     let filter = Filter::new()
         .address(contract_addresses()?)
@@ -161,11 +176,19 @@ pub async fn run(config: FrontfillConfig) -> Result<()> {
         let block_number = log.block_number.unwrap_or(0);
         let tx_hash = log.transaction_hash.unwrap_or_default().to_string();
         let log_index = log.log_index.unwrap_or(0);
+
+        if let Some(runtime) = metrics_runtime.as_ref() {
+            runtime.metrics.observe_log(block_number).await;
+        }
+
         let mut storage_guard = storage.lock().await;
 
         if let Some(target_block) = next_rotation_block {
             if block_number >= target_block {
                 storage_guard.rotate().await?;
+                if let Some(runtime) = metrics_runtime.as_ref() {
+                    runtime.metrics.rotate_total.inc();
+                }
                 info!(block_number, "Rotated storage writers");
                 next_rotation_block = Some(block_number.saturating_add(config.flush_blocks));
             }
@@ -173,8 +196,34 @@ pub async fn run(config: FrontfillConfig) -> Result<()> {
             next_rotation_block = Some(block_number.saturating_add(config.flush_blocks));
         }
 
-        if let Some(decoded) = decode_log(&log)? {
-            storage_guard
+        let decoded = match decode_log(&log) {
+            Ok(decoded) => decoded,
+            Err(error) => {
+                if let Some(runtime) = metrics_runtime.as_ref() {
+                    runtime.metrics.decode_errors_total.inc();
+                }
+
+                if let Some(runtime) = metrics_runtime.take() {
+                    runtime.metrics.ws_connected.set(0.0);
+                    runtime.shutdown().await;
+                }
+                return Err(error);
+            }
+        };
+
+        if let Some(decoded) = decoded {
+            if let Some(runtime) = metrics_runtime.as_ref() {
+                runtime
+                    .metrics
+                    .observe_decoded_type(decoded.event_type)
+                    .await;
+            }
+
+            let write_timer = metrics_runtime
+                .as_ref()
+                .map(|runtime| runtime.metrics.sink_write_seconds.start_timer());
+
+            if let Err(error) = storage_guard
                 .write_event(
                     decoded.event_type,
                     block_number,
@@ -182,8 +231,34 @@ pub async fn run(config: FrontfillConfig) -> Result<()> {
                     log_index,
                     &decoded.columns,
                 )
-                .await?;
+                .await
+            {
+                if let Some(runtime) = metrics_runtime.as_ref() {
+                    runtime.metrics.write_errors_total.inc();
+                }
+
+                if let Some(timer) = write_timer {
+                    timer.observe_duration();
+                }
+
+                if let Some(runtime) = metrics_runtime.take() {
+                    runtime.metrics.ws_connected.set(0.0);
+                    runtime.shutdown().await;
+                }
+
+                return Err(error);
+            }
+
+            if let Some(timer) = write_timer {
+                timer.observe_duration();
+            }
         }
+    }
+
+    if let Some(runtime) = metrics_runtime.take() {
+        runtime.metrics.shutdown_total.inc();
+        runtime.metrics.ws_connected.set(0.0);
+        runtime.shutdown().await;
     }
 
     Ok(())
@@ -203,6 +278,9 @@ mod tests {
             rpc_auth_key: None,
             rpc_auth_header: "Authorization".to_string(),
             rpc_auth_scheme: "Bearer".to_string(),
+            metrics_enabled: false,
+            metrics_bind: "127.0.0.1".to_string(),
+            metrics_port: 9090,
             sink,
         }
     }

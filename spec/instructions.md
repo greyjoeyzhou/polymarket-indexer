@@ -243,3 +243,16 @@ execute phase 2; when finish you can proceed into phase 3 directly.
 ```
 yes, please work on phase 4 now.
 ```
+
+24. Hephaestus, GPT-5.3 Codex
+
+```
+/superpowers:write-plan
+for the frontfill ingestion cli, add a option to also expose a metric endpoint that could be scrapped by prom. exposing following metrics: current block number, number of logs per mins in total and for each type, and other metrics you find valuable.
+```
+
+0010_frontfill-prometheus-metrics.md
+
+```
+yes add integration test for metrics runtime
+```

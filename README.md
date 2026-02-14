@@ -109,6 +109,7 @@ Common configuration is exposed through CLI flags and env vars (Clap `env` bindi
 
 - `RPC_URL` for frontfill WebSocket RPC
 - `RPC_AUTH_KEY`, `RPC_AUTH_HEADER` (default `Authorization`), and `RPC_AUTH_SCHEME` (default `Bearer`) for frontfill WebSocket header auth
+- `METRICS_ENABLED` (`false` by default), `METRICS_BIND` (`127.0.0.1` by default), and `METRICS_PORT` (`9090` by default) for optional frontfill Prometheus endpoint
 - `RPC_HTTP_URL` and optional `RPC_HTTP_KEY` for backfill HTTP RPC
 - `RPC_HTTP_AUTH_HEADER` (default `Authorization`) and `RPC_HTTP_AUTH_SCHEME` (default `Bearer`) for header-based auth
 - `OUTPUT_DIR` for Parquet output
@@ -117,3 +118,9 @@ Common configuration is exposed through CLI flags and env vars (Clap `env` bindi
 
 When `RPC_HTTP_KEY` is set for backfill, the key is sent via HTTP headers (not URL query params).
 When `RPC_AUTH_KEY` is set for frontfill, the key is sent via the WebSocket `Authorization` header.
+
+When metrics are enabled for frontfill, scrape:
+
+```bash
+curl "http://127.0.0.1:9090/metrics"
+```
