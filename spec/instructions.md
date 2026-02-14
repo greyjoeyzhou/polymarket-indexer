@@ -66,9 +66,16 @@ come up with a spec, write down to the `spec` direcotry, then execute
 ```
 
 0002_storage-backends.md
-0003_kafka-integration-test.md (TODO, forget to copy the promopt for this one)
 
 9. Sisyphus, gpt-5.2-codex
+
+```
+add an integration test, you can use testcontainer to start a local kafka for testing; write your design and execute
+```
+
+0003_kafka-integration-test.md
+
+10. Sisyphus, gpt-5.2-codex
 
 ```
 i tried to run `cargo test --features kafka --test kafka` but got the following error
@@ -94,7 +101,7 @@ error: could not compile `polymarket-indexer` (test "kafka") due to 2 previous e
 warning: build failed, waiting for other jobs to finish... 
 ```
 
-10. Sisyphus, gpt-5.2-codex
+11. Sisyphus, gpt-5.2-codex
 
 ```
 Add a backfill cli bin.
@@ -112,7 +119,7 @@ Write your spec and execute.
 
 0004_backfill-cli.md
 
-11. Sisyphus, gpt-5.2-codex
+12. Sisyphus, gpt-5.2-codex
 
 ```
 for the backfill route, make the following changes
@@ -124,13 +131,13 @@ for the backfill route, make the following changes
 
 0005_backfill-http_rpc.md
 
-12. Hephaestus, gpt-5.3-codex
+13. Hephaestus, gpt-5.3-codex
 
 ```
 add config to report test coverage
 ```
 
-13. Hephaestus, gpt-5.3-codex
+14. Hephaestus, gpt-5.3-codex
 
 ```
 try to install cargo-llvm-cov but get the following erorr
@@ -141,14 +148,14 @@ error: cannot install package `cargo-llvm-cov 0.8.4`, it requires rustc 1.87 or 
 
 get it fixed
 
-13. Hephaestus, gpt-5.3-codex
+15. Hephaestus, gpt-5.3-codex
 
 ```
 Update AGENTS.md to document the naming convention for the spec to be created.
 Refer to the `spec/instructions.md`.
 ```
 
-14. Hephaestus, gpt-5.3-codex
+16. Hephaestus, gpt-5.3-codex
 
 ```
 Update AGENTS.md to use following tech stack during development:
@@ -160,7 +167,7 @@ Update AGENTS.md to use following tech stack during development:
 Refactor existing codebase to use the specified tech stack.
 ```
 
-15. Hephaestus, gpt-5.3-codex
+17. Hephaestus, gpt-5.3-codex
 
 ```
 Go over commands in justfile, make sure they are correct and up to date.
@@ -168,13 +175,13 @@ Go over commands in justfile, make sure they are correct and up to date.
 Run the checks and update accordingly to fix.
 ```
 
-15. Hephaestus, gpt-5.3-codex
+18. Hephaestus, gpt-5.3-codex
 
 ```
 create a gitignore file suitable for this project
 ```
 
-16. Hephaestus, GPT-5.3 Codex
+19. Hephaestus, GPT-5.3 Codex
 
 ```
 /superpowers:write-plan 
@@ -190,13 +197,13 @@ Create thin wrapper clis for backfill and frontfill by using the common lib.
 
 0006_refactor-shared-ingestion-lib.md
 
-17. Hephaestus, GPT-5.3 Codex
+20. Hephaestus, GPT-5.3 Codex
 
 ```
 update AGENTS.md and README.md to reflect current arch & practice for coding
 ```
 
-18. Hephaestus, GPT-5.3 Codex
+21. Hephaestus, GPT-5.3 Codex
 
 ```
 /superpowers:write-plan 
@@ -210,13 +217,13 @@ Write the plan to `spec` dir.
 follow the plan in spec/0007_backfill-header-auth.md and implement
 ```
 
-19. Hephaestus, GPT-5.3 Codex
+22. Hephaestus, GPT-5.3 Codex
 
 ```
 check the `run` commands in just, make sure they can actually run
 ```
 
-20. Hephaestus, GPT-5.3 Codex
+23. Hephaestus, GPT-5.3 Codex
 
 ```
 /superpowers:write-plan 
