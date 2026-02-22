@@ -37,5 +37,30 @@ async fn metrics_runtime_exposes_prometheus_endpoint() {
     assert!(body.contains("polymarket_frontfill_logs_by_type_total"));
     assert!(body.contains("polymarket_frontfill_decode_errors_total"));
 
+    let health_url = format!("http://127.0.0.1:{port}/health");
+    let ready_url = format!("http://127.0.0.1:{port}/ready");
+
+    let health_before = client
+        .get(&health_url)
+        .send()
+        .await
+        .expect("health response before ws connected");
+    assert_eq!(
+        health_before.status(),
+        reqwest::StatusCode::SERVICE_UNAVAILABLE
+    );
+
+    runtime.metrics.ws_connected.set(1.0);
+
+    let health = client
+        .get(&health_url)
+        .send()
+        .await
+        .expect("health response");
+    assert!(health.status().is_success());
+
+    let ready = client.get(&ready_url).send().await.expect("ready response");
+    assert!(ready.status().is_success());
+
     runtime.shutdown().await;
 }

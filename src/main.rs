@@ -15,6 +15,9 @@ struct Args {
     #[arg(long, default_value = RPC_URL, env = "RPC_URL")]
     rpc_url: String,
 
+    #[arg(long, env = "FRONTFILL_START_BLOCK")]
+    frontfill_start_block: Option<u64>,
+
     #[arg(long, env = "RPC_AUTH_KEY")]
     rpc_auth_key: Option<String>,
 
@@ -81,6 +84,7 @@ async fn main() -> Result<()> {
 
     frontfill::run(FrontfillConfig {
         flush_blocks: args.flush_blocks,
+        start_block: args.frontfill_start_block,
         rpc_url: args.rpc_url,
         rpc_auth_key: args.rpc_auth_key,
         rpc_auth_header: args.rpc_auth_header,
@@ -124,5 +128,19 @@ mod tests {
         assert!(!args.metrics_enabled);
         assert_eq!(args.metrics_bind, "127.0.0.1");
         assert_eq!(args.metrics_port, 9090);
+    }
+
+    #[test]
+    fn args_frontfill_start_block_defaults_to_none() {
+        let args = Args::try_parse_from(["polymarket-indexer"]).expect("parse args");
+        assert_eq!(args.frontfill_start_block, None);
+    }
+
+    #[test]
+    fn args_parse_frontfill_start_block() {
+        let args =
+            Args::try_parse_from(["polymarket-indexer", "--frontfill-start-block", "68000000"])
+                .expect("parse args");
+        assert_eq!(args.frontfill_start_block, Some(68000000));
     }
 }

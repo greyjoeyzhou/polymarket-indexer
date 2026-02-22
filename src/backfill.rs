@@ -8,7 +8,7 @@ use reqwest::Url;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::Semaphore;
+use tokio::sync::{Mutex, Semaphore};
 use tracing::{info, warn};
 
 use crate::contracts::contract_addresses;
@@ -222,6 +222,7 @@ pub async fn run(config: BackfillConfig) -> Result<()> {
         config.chunk_size_by_block_number,
     );
     let output_dir = Arc::new(config.output_dir);
+    let failures: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
 
     futures::stream::iter(ranges)
         .for_each_concurrent(config.parallelism, |(chunk_start, chunk_end)| {
@@ -229,6 +230,7 @@ pub async fn run(config: BackfillConfig) -> Result<()> {
             let output_dir = Arc::clone(&output_dir);
             let rate_limiter = rate_limiter.clone();
             let addresses = addresses.clone();
+            let failures = Arc::clone(&failures);
 
             async move {
                 rate_limiter.acquire().await;
@@ -243,11 +245,16 @@ pub async fn run(config: BackfillConfig) -> Result<()> {
                     Ok(logs) => logs,
                     Err(error) => {
                         warn!(chunk_start, chunk_end, error = %error, "Fetch failed");
+                        failures
+                            .lock()
+                            .await
+                            .push(format!("fetch failed for {chunk_start}-{chunk_end}: {error}"));
                         return;
                     }
                 };
 
                 let mut by_event: HashMap<String, (Vec<String>, Vec<EventRow>)> = HashMap::new();
+                let mut missing_metadata_count = 0_u64;
 
                 for log in logs {
                     let decoded = match decode_log(&log) {
@@ -259,9 +266,18 @@ pub async fn run(config: BackfillConfig) -> Result<()> {
                         }
                     };
 
-                    let block_number = log.block_number.unwrap_or(chunk_start);
-                    let tx_hash = log.transaction_hash.unwrap_or_default().to_string();
-                    let log_index = log.log_index.unwrap_or(0);
+                    let Some(block_number) = log.block_number else {
+                        missing_metadata_count = missing_metadata_count.saturating_add(1);
+                        continue;
+                    };
+                    let Some(tx_hash) = log.transaction_hash else {
+                        missing_metadata_count = missing_metadata_count.saturating_add(1);
+                        continue;
+                    };
+                    let Some(log_index) = log.log_index else {
+                        missing_metadata_count = missing_metadata_count.saturating_add(1);
+                        continue;
+                    };
 
                     let entry = by_event
                         .entry(decoded.event_type.to_string())
@@ -278,7 +294,7 @@ pub async fn run(config: BackfillConfig) -> Result<()> {
 
                     entry.1.push(EventRow {
                         block_number,
-                        tx_hash,
+                        tx_hash: tx_hash.to_string(),
                         log_index,
                         values: decoded
                             .columns
@@ -310,13 +326,37 @@ pub async fn run(config: BackfillConfig) -> Result<()> {
                             error = %error,
                             "Failed to write parquet"
                         );
+                        failures.lock().await.push(format!(
+                            "write failed for {chunk_start}-{chunk_end}/{event_type}: {error}"
+                        ));
                     }
+                }
+
+                if missing_metadata_count > 0 {
+                    warn!(
+                        chunk_start,
+                        chunk_end,
+                        missing_metadata_count,
+                        "Skipped decoded logs with missing metadata"
+                    );
+                    failures.lock().await.push(format!(
+                        "metadata missing for {missing_metadata_count} decoded logs in {chunk_start}-{chunk_end}"
+                    ));
                 }
 
                 info!(chunk_start, chunk_end, "Chunk complete");
             }
         })
         .await;
+
+    let failures = failures.lock().await;
+    if !failures.is_empty() {
+        return Err(anyhow!(
+            "backfill completed with {} failure(s): {}",
+            failures.len(),
+            failures.join(" | ")
+        ));
+    }
 
     info!("Backfill complete");
     Ok(())

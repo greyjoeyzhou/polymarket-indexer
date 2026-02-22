@@ -256,3 +256,27 @@ for the frontfill ingestion cli, add a option to also expose a metric endpoint t
 ```
 yes add integration test for metrics runtime
 ```
+
+25. CLAUDE, Opus-4.6 with max context
+
+```
+Review the codebase thoroughly, give an overview of the architecture and design decisions made.
+Pay attention to the internal components structure and their interactions.
+Use mermaid chart to depict the architecture when possible.
+Identify potential issues and propose possible solutions.
+Write your review to the `spec` directory as `CODE_REVIW_<date-str>.md`.
+```
+
+CODE_REVIEW_20260216.md
+
+26. Hephaestus, GPT-5.3 Codex
+
+```
+We recently did a code review for this repo.
+Go through the review, analyze and see if those are real issues.
+Make a plan for getting things to be fixed.
+Write your review response to the `spec` directory as `REVIEW_RESPONSE_<date-str>.md`.
+```
+
+REVIEW_RESPONSE_20260221.md
+0011_review-remediation-plan.md

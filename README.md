@@ -87,11 +87,11 @@ The output is organized by event type:
 ```
 output/
   ├── ConditionPreparation/
-  │   └── <timestamp>.parquet
+  │   └── <timestamp>_set<id>.parquet
   ├── OrderFilled/
-  │   └── <timestamp>.parquet
+  │   └── <timestamp>_set<id>.parquet
   ├── PositionSplit/
-  │   └── <timestamp>.parquet
+  │   └── <timestamp>_set<id>.parquet
   ...
 ```
 
@@ -108,6 +108,7 @@ Each Parquet file contains normalized metadata columns and event-specific column
 Common configuration is exposed through CLI flags and env vars (Clap `env` bindings). Key examples:
 
 - `RPC_URL` for frontfill WebSocket RPC
+- `FRONTFILL_START_BLOCK` (optional) to start frontfill from a specific block instead of `latest`
 - `RPC_AUTH_KEY`, `RPC_AUTH_HEADER` (default `Authorization`), and `RPC_AUTH_SCHEME` (default `Bearer`) for frontfill WebSocket header auth
 - `METRICS_ENABLED` (`false` by default), `METRICS_BIND` (`127.0.0.1` by default), and `METRICS_PORT` (`9090` by default) for optional frontfill Prometheus endpoint
 - `RPC_HTTP_URL` and optional `RPC_HTTP_KEY` for backfill HTTP RPC
@@ -123,4 +124,11 @@ When metrics are enabled for frontfill, scrape:
 
 ```bash
 curl "http://127.0.0.1:9090/metrics"
+```
+
+Health/readiness endpoints are also exposed when metrics are enabled:
+
+```bash
+curl "http://127.0.0.1:9090/health"
+curl "http://127.0.0.1:9090/ready"
 ```

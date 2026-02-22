@@ -5,6 +5,7 @@ use anyhow::{Result, anyhow};
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::time::{Duration, sleep};
 use tracing::info;
 
 use crate::contracts::contract_addresses;
@@ -28,6 +29,7 @@ pub enum SinkConfig {
 
 pub struct FrontfillConfig {
     pub flush_blocks: u64,
+    pub start_block: Option<u64>,
     pub rpc_url: String,
     pub rpc_auth_key: Option<String>,
     pub rpc_auth_header: String,
@@ -36,6 +38,19 @@ pub struct FrontfillConfig {
     pub metrics_bind: String,
     pub metrics_port: u16,
     pub sink: SinkConfig,
+}
+
+fn build_filter(start_block: Option<u64>) -> Result<Filter> {
+    let filter = Filter::new().address(contract_addresses()?);
+    Ok(match start_block {
+        Some(block) => filter.from_block(BlockNumberOrTag::Number(block)),
+        None => filter.from_block(BlockNumberOrTag::Latest),
+    })
+}
+
+fn reconnect_delay(attempt: u32) -> Duration {
+    let shift = attempt.min(5);
+    Duration::from_secs(1_u64 << shift)
 }
 
 fn build_ws_auth(
@@ -119,21 +134,12 @@ pub async fn run(config: FrontfillConfig) -> Result<()> {
 
     info!(
         flush_blocks = config.flush_blocks,
+        start_block = ?config.start_block,
         rpc_url = %config.rpc_url,
         "Runtime configuration loaded"
     );
 
     let storage = build_storage(config.sink)?;
-
-    let ws = build_ws_connect(
-        &config.rpc_url,
-        config.rpc_auth_key.as_deref(),
-        &config.rpc_auth_header,
-        &config.rpc_auth_scheme,
-    )?;
-
-    let provider = ProviderBuilder::new().on_ws(ws).await?;
-    info!("Connected to Polygon WebSocket");
 
     let mut metrics_runtime = if config.metrics_enabled {
         Some(start_metrics_runtime(&config.metrics_bind, config.metrics_port).await?)
@@ -142,126 +148,208 @@ pub async fn run(config: FrontfillConfig) -> Result<()> {
     };
 
     if let Some(runtime) = metrics_runtime.as_ref() {
-        runtime.metrics.ws_connected.set(1.0);
+        runtime.metrics.ws_connected.set(0.0);
     }
-
-    let filter = Filter::new()
-        .address(contract_addresses()?)
-        .from_block(BlockNumberOrTag::Latest);
-
-    let sub = provider.subscribe_logs(&filter).await?;
-    let mut stream = sub.into_stream();
-
-    info!("Listening for events");
     let mut next_rotation_block: Option<u64> = None;
 
+    let mut reconnect_attempt = 0_u32;
     loop {
-        let log = tokio::select! {
-            maybe_log = stream.next() => {
-                match maybe_log {
-                    Some(log) => log,
-                    None => break,
-                }
-            }
-            result = tokio::signal::ctrl_c() => {
-                result?;
-                info!("Received shutdown signal, closing parquet writers");
-                let mut storage_guard = storage.lock().await;
-                storage_guard.close().await?;
-                info!("Shutdown complete");
-                break;
+        let ws = build_ws_connect(
+            &config.rpc_url,
+            config.rpc_auth_key.as_deref(),
+            &config.rpc_auth_header,
+            &config.rpc_auth_scheme,
+        )?;
+
+        let provider = match ProviderBuilder::new().on_ws(ws).await {
+            Ok(provider) => provider,
+            Err(error) => {
+                let delay = reconnect_delay(reconnect_attempt);
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
+                info!(error = %error, ?delay, "WebSocket connection failed; retrying");
+                sleep(delay).await;
+                continue;
             }
         };
 
-        let block_number = log.block_number.unwrap_or(0);
-        let tx_hash = log.transaction_hash.unwrap_or_default().to_string();
-        let log_index = log.log_index.unwrap_or(0);
+        let filter = build_filter(config.start_block)?;
+        let sub = match provider.subscribe_logs(&filter).await {
+            Ok(sub) => sub,
+            Err(error) => {
+                let delay = reconnect_delay(reconnect_attempt);
+                reconnect_attempt = reconnect_attempt.saturating_add(1);
+                info!(error = %error, ?delay, "WebSocket subscribe failed; retrying");
+                sleep(delay).await;
+                continue;
+            }
+        };
+
+        reconnect_attempt = 0;
+        let mut stream = sub.into_stream();
 
         if let Some(runtime) = metrics_runtime.as_ref() {
-            runtime.metrics.observe_log(block_number).await;
+            runtime.metrics.ws_connected.set(1.0);
         }
 
-        let mut storage_guard = storage.lock().await;
+        info!("Connected to Polygon WebSocket and listening for events");
 
-        if let Some(target_block) = next_rotation_block {
-            if block_number >= target_block {
-                storage_guard.rotate().await?;
-                if let Some(runtime) = metrics_runtime.as_ref() {
-                    runtime.metrics.rotate_total.inc();
+        loop {
+            let log = tokio::select! {
+                maybe_log = stream.next() => {
+                    match maybe_log {
+                        Some(log) => log,
+                        None => break,
+                    }
                 }
-                info!(block_number, "Rotated storage writers");
+                result = tokio::signal::ctrl_c() => {
+                    result?;
+                    info!("Received shutdown signal, closing parquet writers");
+                    let mut storage_guard = storage.lock().await;
+                    storage_guard.close().await?;
+                    info!("Shutdown complete");
+
+                    if let Some(runtime) = metrics_runtime.take() {
+                        runtime.metrics.shutdown_total.inc();
+                        runtime.metrics.ws_connected.set(0.0);
+                        runtime.shutdown().await;
+                    }
+
+                    return Ok(());
+                }
+            };
+
+            let block_number = match log.block_number {
+                Some(block_number) => block_number,
+                None => {
+                    let error = anyhow!("frontfill received log missing block_number");
+                    if let Some(runtime) = metrics_runtime.as_ref() {
+                        runtime.metrics.missing_metadata_total.inc();
+                    }
+                    if let Some(runtime) = metrics_runtime.take() {
+                        runtime.metrics.ws_connected.set(0.0);
+                        runtime.shutdown().await;
+                    }
+                    return Err(error);
+                }
+            };
+
+            let tx_hash = match log.transaction_hash {
+                Some(tx_hash) => tx_hash.to_string(),
+                None => {
+                    let error = anyhow!("frontfill received log missing transaction_hash");
+                    if let Some(runtime) = metrics_runtime.as_ref() {
+                        runtime.metrics.missing_metadata_total.inc();
+                    }
+                    if let Some(runtime) = metrics_runtime.take() {
+                        runtime.metrics.ws_connected.set(0.0);
+                        runtime.shutdown().await;
+                    }
+                    return Err(error);
+                }
+            };
+
+            let log_index = match log.log_index {
+                Some(log_index) => log_index,
+                None => {
+                    let error = anyhow!("frontfill received log missing log_index");
+                    if let Some(runtime) = metrics_runtime.as_ref() {
+                        runtime.metrics.missing_metadata_total.inc();
+                    }
+                    if let Some(runtime) = metrics_runtime.take() {
+                        runtime.metrics.ws_connected.set(0.0);
+                        runtime.shutdown().await;
+                    }
+                    return Err(error);
+                }
+            };
+
+            if let Some(runtime) = metrics_runtime.as_ref() {
+                runtime.metrics.observe_log(block_number).await;
+            }
+
+            let mut storage_guard = storage.lock().await;
+
+            if let Some(target_block) = next_rotation_block {
+                if block_number >= target_block {
+                    storage_guard.rotate().await?;
+                    if let Some(runtime) = metrics_runtime.as_ref() {
+                        runtime.metrics.rotate_total.inc();
+                    }
+                    info!(block_number, "Rotated storage writers");
+                    next_rotation_block = Some(block_number.saturating_add(config.flush_blocks));
+                }
+            } else {
                 next_rotation_block = Some(block_number.saturating_add(config.flush_blocks));
             }
-        } else {
-            next_rotation_block = Some(block_number.saturating_add(config.flush_blocks));
-        }
 
-        let decoded = match decode_log(&log) {
-            Ok(decoded) => decoded,
-            Err(error) => {
+            let decoded = match decode_log(&log) {
+                Ok(decoded) => decoded,
+                Err(error) => {
+                    if let Some(runtime) = metrics_runtime.as_ref() {
+                        runtime.metrics.decode_errors_total.inc();
+                    }
+
+                    if let Some(runtime) = metrics_runtime.take() {
+                        runtime.metrics.ws_connected.set(0.0);
+                        runtime.shutdown().await;
+                    }
+                    return Err(error);
+                }
+            };
+
+            if let Some(decoded) = decoded {
                 if let Some(runtime) = metrics_runtime.as_ref() {
-                    runtime.metrics.decode_errors_total.inc();
+                    runtime
+                        .metrics
+                        .observe_decoded_type(decoded.event_type)
+                        .await;
                 }
 
-                if let Some(runtime) = metrics_runtime.take() {
-                    runtime.metrics.ws_connected.set(0.0);
-                    runtime.shutdown().await;
-                }
-                return Err(error);
-            }
-        };
+                let write_timer = metrics_runtime
+                    .as_ref()
+                    .map(|runtime| runtime.metrics.sink_write_seconds.start_timer());
 
-        if let Some(decoded) = decoded {
-            if let Some(runtime) = metrics_runtime.as_ref() {
-                runtime
-                    .metrics
-                    .observe_decoded_type(decoded.event_type)
-                    .await;
-            }
+                if let Err(error) = storage_guard
+                    .write_event(
+                        decoded.event_type,
+                        block_number,
+                        &tx_hash,
+                        log_index,
+                        &decoded.columns,
+                    )
+                    .await
+                {
+                    if let Some(runtime) = metrics_runtime.as_ref() {
+                        runtime.metrics.write_errors_total.inc();
+                    }
 
-            let write_timer = metrics_runtime
-                .as_ref()
-                .map(|runtime| runtime.metrics.sink_write_seconds.start_timer());
+                    if let Some(timer) = write_timer {
+                        timer.observe_duration();
+                    }
 
-            if let Err(error) = storage_guard
-                .write_event(
-                    decoded.event_type,
-                    block_number,
-                    &tx_hash,
-                    log_index,
-                    &decoded.columns,
-                )
-                .await
-            {
-                if let Some(runtime) = metrics_runtime.as_ref() {
-                    runtime.metrics.write_errors_total.inc();
+                    if let Some(runtime) = metrics_runtime.take() {
+                        runtime.metrics.ws_connected.set(0.0);
+                        runtime.shutdown().await;
+                    }
+
+                    return Err(error);
                 }
 
                 if let Some(timer) = write_timer {
                     timer.observe_duration();
                 }
-
-                if let Some(runtime) = metrics_runtime.take() {
-                    runtime.metrics.ws_connected.set(0.0);
-                    runtime.shutdown().await;
-                }
-
-                return Err(error);
-            }
-
-            if let Some(timer) = write_timer {
-                timer.observe_duration();
             }
         }
-    }
 
-    if let Some(runtime) = metrics_runtime.take() {
-        runtime.metrics.shutdown_total.inc();
-        runtime.metrics.ws_connected.set(0.0);
-        runtime.shutdown().await;
-    }
+        if let Some(runtime) = metrics_runtime.as_ref() {
+            runtime.metrics.ws_connected.set(0.0);
+        }
 
-    Ok(())
+        let delay = reconnect_delay(reconnect_attempt);
+        reconnect_attempt = reconnect_attempt.saturating_add(1);
+        info!(?delay, "WebSocket stream ended; reconnecting");
+        sleep(delay).await;
+    }
 }
 
 #[cfg(test)]
@@ -274,6 +362,7 @@ mod tests {
     fn test_config(sink: SinkConfig) -> FrontfillConfig {
         FrontfillConfig {
             flush_blocks: 10,
+            start_block: None,
             rpc_url: "wss://example.invalid".to_string(),
             rpc_auth_key: None,
             rpc_auth_header: "Authorization".to_string(),

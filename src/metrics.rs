@@ -23,6 +23,7 @@ pub struct FrontfillMetrics {
     pub logs_per_minute_by_type: GaugeVec,
     pub decode_errors_total: IntCounter,
     pub write_errors_total: IntCounter,
+    pub missing_metadata_total: IntCounter,
     pub rotate_total: IntCounter,
     pub shutdown_total: IntCounter,
     pub sink_write_seconds: Histogram,
@@ -42,6 +43,19 @@ pub struct MetricsRuntime {
     rate_handle: RateUpdaterHandle,
 }
 
+#[derive(Clone)]
+struct HealthState {
+    ws_connected: Gauge,
+    last_log_unix_seconds: Gauge,
+    max_staleness_seconds: u64,
+}
+
+#[derive(Clone)]
+struct AppState {
+    registry: Arc<Registry>,
+    health: HealthState,
+}
+
 impl MetricsRuntime {
     pub async fn shutdown(self) {
         self.rate_handle.shutdown().await;
@@ -52,7 +66,12 @@ impl MetricsRuntime {
 pub async fn start_metrics_runtime(bind: &str, port: u16) -> Result<MetricsRuntime> {
     let registry = Arc::new(Registry::new());
     let metrics = FrontfillMetrics::register(registry.as_ref())?;
-    let server_handle = start_metrics_server(registry, bind, port).await?;
+    let health = HealthState {
+        ws_connected: metrics.ws_connected.clone(),
+        last_log_unix_seconds: metrics.last_log_unix_seconds.clone(),
+        max_staleness_seconds: 120,
+    };
+    let server_handle = start_metrics_server(registry, health, bind, port).await?;
     let rate_handle = metrics.spawn_rate_updater();
 
     Ok(MetricsRuntime {
@@ -98,6 +117,10 @@ impl FrontfillMetrics {
             "polymarket_frontfill_write_errors_total",
             "Total sink write errors in frontfill",
         )?;
+        let missing_metadata_total = IntCounter::new(
+            "polymarket_frontfill_missing_metadata_total",
+            "Total logs rejected due to missing block_number, transaction_hash, or log_index",
+        )?;
         let rotate_total = IntCounter::new(
             "polymarket_frontfill_rotate_total",
             "Total sink rotations triggered",
@@ -126,6 +149,7 @@ impl FrontfillMetrics {
         registry.register(Box::new(logs_per_minute_by_type.clone()))?;
         registry.register(Box::new(decode_errors_total.clone()))?;
         registry.register(Box::new(write_errors_total.clone()))?;
+        registry.register(Box::new(missing_metadata_total.clone()))?;
         registry.register(Box::new(rotate_total.clone()))?;
         registry.register(Box::new(shutdown_total.clone()))?;
         registry.register(Box::new(sink_write_seconds.clone()))?;
@@ -140,6 +164,7 @@ impl FrontfillMetrics {
             logs_per_minute_by_type,
             decode_errors_total,
             write_errors_total,
+            missing_metadata_total,
             rotate_total,
             shutdown_total,
             sink_write_seconds,
@@ -281,6 +306,7 @@ impl RateUpdaterHandle {
 
 async fn start_metrics_server(
     registry: Arc<Registry>,
+    health: HealthState,
     bind: &str,
     port: u16,
 ) -> Result<MetricsServerHandle> {
@@ -289,7 +315,9 @@ async fn start_metrics_server(
 
     let app = Router::new()
         .route("/metrics", get(metrics_handler))
-        .with_state(registry);
+        .route("/health", get(health_handler))
+        .route("/ready", get(ready_handler))
+        .with_state(AppState { registry, health });
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let task = tokio::spawn(async move {
@@ -308,8 +336,8 @@ async fn start_metrics_server(
     })
 }
 
-async fn metrics_handler(State(registry): State<Arc<Registry>>) -> impl IntoResponse {
-    match render_metrics(&registry) {
+async fn metrics_handler(State(state): State<AppState>) -> impl IntoResponse {
+    match render_metrics(&state.registry) {
         Ok((content_type, body)) => {
             let mut headers = HeaderMap::new();
             if let Ok(value) = HeaderValue::from_str(&content_type) {
@@ -325,6 +353,36 @@ async fn metrics_handler(State(registry): State<Arc<Registry>>) -> impl IntoResp
                 "metrics encode error".as_bytes().to_vec(),
             )
         }
+    }
+}
+
+fn is_healthy(health: &HealthState) -> bool {
+    if health.ws_connected.get() < 0.5 {
+        return false;
+    }
+
+    let last_log = health.last_log_unix_seconds.get() as u64;
+    if last_log == 0 {
+        return false;
+    }
+
+    let now = current_unix_timestamp_seconds();
+    now.saturating_sub(last_log) <= health.max_staleness_seconds
+}
+
+async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
+    if is_healthy(&state.health) {
+        (StatusCode::OK, "ok")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "unhealthy")
+    }
+}
+
+async fn ready_handler(State(state): State<AppState>) -> impl IntoResponse {
+    if is_healthy(&state.health) {
+        (StatusCode::OK, "ready")
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, "not ready")
     }
 }
 
@@ -383,5 +441,35 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("invalid socket address"));
+    }
+
+    #[test]
+    fn health_is_false_when_disconnected() {
+        let health = HealthState {
+            ws_connected: Gauge::new("test_ws_connected", "test gauge").expect("gauge"),
+            last_log_unix_seconds: Gauge::new("test_last_log", "test gauge").expect("gauge"),
+            max_staleness_seconds: 120,
+        };
+
+        health.ws_connected.set(0.0);
+        health
+            .last_log_unix_seconds
+            .set(current_unix_timestamp_seconds() as f64);
+        assert!(!is_healthy(&health));
+    }
+
+    #[test]
+    fn health_is_true_when_connected_and_recent() {
+        let health = HealthState {
+            ws_connected: Gauge::new("test_ws_connected_ok", "test gauge").expect("gauge"),
+            last_log_unix_seconds: Gauge::new("test_last_log_ok", "test gauge").expect("gauge"),
+            max_staleness_seconds: 120,
+        };
+
+        health.ws_connected.set(1.0);
+        health
+            .last_log_unix_seconds
+            .set(current_unix_timestamp_seconds() as f64);
+        assert!(is_healthy(&health));
     }
 }
